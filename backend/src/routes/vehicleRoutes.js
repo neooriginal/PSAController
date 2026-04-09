@@ -83,12 +83,13 @@ router.post('/vehicles/:vin/actions/:action', async (req, res, next) => {
     res.json(result);
   } catch (error) {
     if (setupService.isReauthError(error)) {
-      await setupService.markReauthRequired(
+      const state = await setupService.recoverAuthorization(
         'PSA session expired during remote action. Please redo onboarding.',
       );
       res.status(409).json({
         code: 'reauth_required',
-        error: 'PSA session expired. Please redo onboarding.',
+        error: 'PSA session expired. Please complete authentication again.',
+        setupState: state,
       });
       return;
     }

@@ -1637,38 +1637,49 @@ class _SetupStatusPanel extends StatelessWidget {
           ),
           child: Text(status),
         ),
-        const SizedBox(height: 16),
-        Text(
-          setupState?.syncMessage ?? 'Waiting for account details.',
-          style: Theme.of(context).textTheme.bodyMedium?.copyWith(height: 1.45),
-        ),
-        const SizedBox(height: 18),
-        for (var index = 0; index < notes.length; index++) ...[
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                margin: const EdgeInsets.only(top: 3),
-                width: 10,
-                height: 10,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: index <= stepIndex
-                      ? const Color(0xFF1F3D33)
-                      : const Color(0xFFD8CDBD),
+        const SizedBox(height: 12),
+        Expanded(
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  setupState?.syncMessage ?? 'Waiting for account details.',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyMedium?.copyWith(height: 1.45),
                 ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  notes[index],
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-              ),
-            ],
+                const SizedBox(height: 18),
+                for (var index = 0; index < notes.length; index++) ...[
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        margin: const EdgeInsets.only(top: 3),
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: index <= stepIndex
+                              ? const Color(0xFF1F3D33)
+                              : const Color(0xFFD8CDBD),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          notes[index],
+                          style: Theme.of(context).textTheme.bodyMedium,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                ],
+              ],
+            ),
           ),
-          const SizedBox(height: 12),
-        ],
+        ),
       ],
     );
   }

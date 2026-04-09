@@ -7,11 +7,15 @@ const { upsertVehicles, saveImportedVehicleData } = require('./vehicleService');
 
 function isReauthError(error) {
   const message = (error?.message || '').toLowerCase();
+  if (message.includes("missing parameter, 'refresh_token'")) {
+    return false;
+  }
   return (
     message.includes('invalid_grant') ||
     message.includes('grant is invalid') ||
     message.includes('token is invalid') ||
-    message.includes('refresh token')
+    message.includes('refresh token') ||
+    message.includes('missing session fields')
   );
 }
 
@@ -94,6 +98,43 @@ async function saveCredentials(credentials) {
   );
 }
 
+async function getSavedCredentials() {
+  const row = await db.get('SELECT * FROM psa_credentials WHERE id = 1');
+  if (!row) {
+    return null;
+  }
+  return {
+    brand: row.brand,
+    email: row.email,
+    password: row.password,
+    countryCode: row.country_code,
+  };
+}
+
+async function recoverAuthorization(reason) {
+  const credentials = await getSavedCredentials();
+  if (!credentials) {
+    return markReauthRequired(reason);
+  }
+
+  const provider = getPsaProvider();
+  try {
+    const response = await provider.submitCredentials(credentials);
+    return updateSetupState({
+      status: response.status,
+      brand: credentials.brand,
+      email: credentials.email,
+      countryCode: credentials.countryCode,
+      redirectUrl: response.redirectUrl,
+      syncMessage:
+        reason ||
+        'PSA session expired. Please complete authentication again using the refreshed link.',
+    });
+  } catch (_error) {
+    return markReauthRequired(reason);
+  }
+}
+
 async function submitCredentials(credentials, actor) {
   await saveCredentials(credentials);
   const provider = getPsaProvider();
@@ -137,8 +178,8 @@ async function connect(actor, payload) {
     });
   } catch (error) {
     if (isReauthError(error)) {
-      nextState = await markReauthRequired(
-        'PSA authentication expired. Please redo onboarding.',
+      nextState = await recoverAuthorization(
+        'PSA session context is missing or expired. Open the refreshed auth link and paste the new code.',
       );
     } else {
       nextState = await updateSetupState({
@@ -164,16 +205,10 @@ async function requestOtp(actor) {
       syncMessage: result.message,
     });
   } catch (error) {
-    if (isReauthError(error)) {
-      nextState = await markReauthRequired(
-        'PSA authorization expired before OTP request. Please redo onboarding.',
-      );
-    } else {
-      nextState = await updateSetupState({
-        status: current.status,
-        syncMessage: `SMS verification failed: ${error.message}`,
-      });
-    }
+    nextState = await updateSetupState({
+      status: current.status === 'not_started' ? 'connected' : current.status,
+      syncMessage: `SMS verification failed: ${error.message}`,
+    });
   }
 
   return nextState;
@@ -191,16 +226,10 @@ async function confirmOtp(actor, payload) {
       syncMessage: result.message,
     });
   } catch (error) {
-    if (isReauthError(error)) {
-      nextState = await markReauthRequired(
-        'PSA authorization expired during OTP confirmation. Please redo onboarding.',
-      );
-    } else {
-      nextState = await updateSetupState({
-        status: current.status,
-        syncMessage: `OTP confirmation failed: ${error.message}`,
-      });
-    }
+    nextState = await updateSetupState({
+      status: current.status === 'not_started' ? 'otp_requested' : current.status,
+      syncMessage: `OTP confirmation failed: ${error.message}`,
+    });
   }
 
   return nextState;
@@ -243,7 +272,7 @@ async function syncVehicles(actor) {
     message = `${vehicles.length} vehicle(s) synced.`;
   } catch (error) {
     if (isReauthError(error)) {
-      await markReauthRequired(
+      await recoverAuthorization(
         'PSA session expired during vehicle sync. Please redo onboarding.',
       );
       return [];
@@ -293,6 +322,7 @@ module.exports = {
   syncVehicles,
   importVehicleData,
   resetOnboarding,
+  recoverAuthorization,
   markReauthRequired,
   isReauthError,
 };

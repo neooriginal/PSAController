@@ -18,7 +18,7 @@
 
 Featuring a built-in **Model Context Protocol (MCP)** server, you can pair this seamlessly with AI agents—like Claude—allowing them to directly query and manage your vehicle on your behalf.
 
-> **Credits:** Built by standing on the shoulders of giants. Massive thanks to the [`psa_car_controller`](https://github.com/flobz/psa_car_controller) project on GitHub for deciphering the Groupe PSA connected APIs.
+> **Credits:** Built by standing on the shoulders of giants. Massive thanks to the [`psa_car_controller`](https://github.com/flobz/psa_car_controller) project on GitHub for deciphering the Groupe PSA connected APIs. This Project is heavily based on his modules. 
 
 
 ## 🚀 Quickstart

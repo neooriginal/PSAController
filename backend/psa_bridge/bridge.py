@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 ROOT_DIR = Path(__file__).resolve().parents[1]
 RUNTIME_HOME = Path(os.environ.get("PSA_BRIDGE_HOME", ROOT_DIR / "psa-runtime"))
 SESSION_FILE = RUNTIME_HOME / "session.json"
+FALLBACK_SESSION_FILE = (ROOT_DIR / "psa-runtime" / "session.json").resolve()
 CERTS_DIR = RUNTIME_HOME / "certs"
 ASSET_CERTS_DIR = Path(__file__).resolve().parent / "certs"
 
@@ -60,16 +61,25 @@ def ensure_runtime_files():
 
 
 def load_session() -> dict:
-    if not SESSION_FILE.exists():
-        return {}
-    try:
-        return json.loads(SESSION_FILE.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as error:
-        raise BridgeError(f"Corrupt session.json: {error}") from error
+    candidates = [SESSION_FILE]
+    if FALLBACK_SESSION_FILE not in candidates:
+        candidates.append(FALLBACK_SESSION_FILE)
+
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            return json.loads(candidate.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise BridgeError(f"Corrupt session.json: {error}") from error
+    return {}
 
 
 def save_session(data: dict):
     SESSION_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    if SESSION_FILE.resolve() != FALLBACK_SESSION_FILE:
+        FALLBACK_SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        FALLBACK_SESSION_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def require_session_keys(session: dict, keys):
@@ -134,6 +144,9 @@ def create_psa_client(session: dict):
         client.manager.code_verifier = session["codeVerifier"]
     if session.get("redirectUri"):
         client.manager.redirect_uri = session["redirectUri"]
+    if session.get("accessToken"):
+        # oauth2-client stores the token on a private field.
+        client.manager._access_token = session["accessToken"]
 
     return client
 
@@ -230,8 +243,12 @@ def fetch_trips(psa_client, vehicle_id):
 
 
 def cmd_submit_credentials(payload: dict):
+    import requests
+
     from psa_car_controller.psa.constants import BRAND
-    from psa_car_controller.psa.setup.app_decoder import InitialSetup
+    from psa_car_controller.psa.setup.apk_parser import ApkParser
+    from psa_car_controller.psa.setup.github import urlretrieve_from_github
+    from psa_car_controller.psacc.application.psa_client import PSAClient
 
     brand_package = normalize_brand(payload.get("brand", ""))
     email = (payload.get("email") or "").strip()
@@ -241,26 +258,96 @@ def cmd_submit_credentials(payload: dict):
     if not email or not password or not country_code:
         raise BridgeError("brand, email, password and countryCode are required.")
 
+    app_version = "1.51.1"
+    timeout_s = 10
+    github_user = "flobz"
+    github_repo = "psa_apk"
+
     with runtime_cwd():
-        setup = InitialSetup(brand_package, email, password, country_code)
-        redirect_url = setup.psacc.manager.generate_redirect_url()
+        filename = brand_package.split(".")[-1] + ".apk"
+        urlretrieve_from_github(github_user, github_repo, "", filename)
+
+        apk_parser = ApkParser(filename, country_code)
+        apk_parser.retrieve_content_from_apk()
+
+        auth_payload = {
+            "siteCode": apk_parser.site_code,
+            "culture": "fr-FR",
+            "action": "authenticate",
+            "fields": {
+                "USR_EMAIL": {"value": email},
+                "USR_PASSWORD": {"value": password},
+            },
+        }
+
+        auth_response = requests.post(
+            apk_parser.host_brandid_prod + "/GetAccessToken",
+            headers={
+                "Connection": "Keep-Alive",
+                "Content-Type": "application/json",
+                "User-Agent": "okhttp/2.3.0",
+            },
+            params={"jsonRequest": json.dumps(auth_payload)},
+            timeout=timeout_s,
+        )
+        auth_data = auth_response.json()
+        ticket = auth_data.get("accessToken")
+        if not ticket:
+            raise BridgeError(f"Failed to authenticate PSA account: {auth_response.text}")
+
+        brand_meta = BRAND[brand_package]
+        user_response = requests.post(
+            f"https://mw-{brand_meta['brand_code'].lower()}-m2c.mym.awsmpsa.com/api/v1/user",
+            params={
+                "culture": apk_parser.culture,
+                "width": 1080,
+                "version": app_version,
+            },
+            data=json.dumps({"site_code": apk_parser.site_code, "ticket": ticket}),
+            headers={
+                "Connection": "Keep-Alive",
+                "Content-Type": "application/json;charset=UTF-8",
+                "Source-Agent": "App-Android",
+                "Token": ticket,
+                "User-Agent": "okhttp/4.8.0",
+                "Version": app_version,
+            },
+            cert=(str(CERTS_DIR / "public.pem"), str(CERTS_DIR / "private.pem")),
+            timeout=timeout_s,
+        )
+        user_data = user_response.json().get("success")
+        if not user_data:
+            raise BridgeError(f"Failed to fetch user profile: {user_response.text}")
+
+        customer_id = f"{brand_meta['brand_code']}-{user_data['id']}"
+        psa_client = PSAClient(
+            None,
+            apk_parser.client_id,
+            apk_parser.client_secret,
+            None,
+            customer_id,
+            brand_meta["realm"],
+            country_code,
+            brand_meta["brand_code"],
+        )
+        redirect_url = psa_client.manager.generate_redirect_url()
 
     session = {
         "brand": brand_package,
         "brandLabel": BRAND[brand_package]["app_name"],
         "email": email,
         "countryCode": country_code,
-        "clientId": setup.client_id,
-        "clientSecret": setup.client_secret,
+        "clientId": apk_parser.client_id,
+        "clientSecret": apk_parser.client_secret,
         "brandCode": BRAND[brand_package]["brand_code"],
         "realm": BRAND[brand_package]["realm"],
-        "customerId": setup.customer_id,
-        "userInfo": setup.user_info,
-        "refreshToken": setup.psacc.manager.refresh_token,
-        "remoteRefreshToken": setup.psacc.remote_client.remoteCredentials.refresh_token,
-        "remoteAccessToken": setup.psacc.remote_client.remoteCredentials.access_token,
-        "redirectUri": setup.psacc.manager.redirect_uri,
-        "codeVerifier": setup.psacc.manager.code_verifier,
+        "customerId": customer_id,
+        "userInfo": user_data,
+        "refreshToken": psa_client.manager.refresh_token,
+        "remoteRefreshToken": psa_client.remote_client.remoteCredentials.refresh_token,
+        "remoteAccessToken": psa_client.remote_client.remoteCredentials.access_token,
+        "redirectUri": psa_client.manager.redirect_uri,
+        "codeVerifier": psa_client.manager.code_verifier,
     }
     save_session(session)
 
@@ -281,6 +368,7 @@ def cmd_connect(payload: dict):
         cars = psa_client.get_vehicles()
 
     session["refreshToken"] = psa_client.manager.refresh_token
+    session["accessToken"] = psa_client.manager.access_token
     session["remoteRefreshToken"] = psa_client.remote_client.remoteCredentials.refresh_token
     session["remoteAccessToken"] = psa_client.remote_client.remoteCredentials.access_token
     session["codeVerifier"] = psa_client.manager.code_verifier
@@ -298,6 +386,10 @@ def cmd_request_otp(_payload: dict):
     session = load_session()
     with runtime_cwd():
         psa_client = create_psa_client(session)
+        if not psa_client.manager.refresh_token:
+            raise BridgeError(
+                "Authentication handoff incomplete. Please complete step 2 and submit a fresh authorization code."
+            )
         if not psa_client.manager.refresh_token_now():
             raise BridgeError("Failed to refresh token before requesting OTP.")
         response = psa_client.remote_client.get_sms_otp_code()
@@ -325,7 +417,6 @@ def cmd_confirm_otp(payload: dict):
             raise BridgeError("OTP setup failed. Verify SMS code and PIN.")
         psa_client.remote_client.otp = otp_session
         save_otp(otp_session, filename=str(RUNTIME_HOME / "otp.bin"))
-        psa_client.remote_client._refresh_remote_token(force=True)
 
     session["remoteRefreshToken"] = psa_client.remote_client.remoteCredentials.refresh_token
     session["remoteAccessToken"] = psa_client.remote_client.remoteCredentials.access_token
@@ -347,9 +438,30 @@ def cmd_sync_vehicles(_payload: dict):
 
     with runtime_cwd():
         psa_client = create_psa_client(session)
-        if not psa_client.manager.refresh_token_now():
-            raise BridgeError("Failed to refresh PSA access token.")
-        cars = psa_client.get_vehicles()
+        has_refresh_token = bool(psa_client.manager.refresh_token)
+        # Do not hard-fail on refresh here. Right after OAuth handoff, the current
+        # access token can already be valid while refresh may transiently fail.
+        if has_refresh_token:
+            try:
+                psa_client.manager.refresh_token_now()
+            except Exception:
+                pass
+        try:
+            cars = psa_client.get_vehicles()
+        except TypeError as error:
+            # Happens when OAuth access token is absent in a fresh bridge process.
+            if "NoneType" in str(error):
+                if not has_refresh_token:
+                    raise BridgeError(
+                        "Authentication handoff incomplete. Please complete step 2 and submit a fresh authorization code."
+                    )
+                if not psa_client.manager.refresh_token_now():
+                    raise BridgeError(
+                        "PSA access token unavailable for sync. Re-run authentication handoff."
+                    )
+                cars = psa_client.get_vehicles()
+            else:
+                raise
 
         vehicles = []
         for car in cars:
@@ -387,6 +499,7 @@ def cmd_sync_vehicles(_payload: dict):
             )
 
     session["refreshToken"] = psa_client.manager.refresh_token
+    session["accessToken"] = psa_client.manager.access_token
     session["remoteRefreshToken"] = psa_client.remote_client.remoteCredentials.refresh_token
     save_session(session)
     return vehicles
