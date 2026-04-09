@@ -25,6 +25,7 @@ class SetupState {
     this.email,
     this.countryCode,
     this.redirectUrl,
+    this.lastVehicleSyncAt,
     this.syncMessage,
     this.updatedAt,
   });
@@ -34,6 +35,7 @@ class SetupState {
   final String? email;
   final String? countryCode;
   final String? redirectUrl;
+  final String? lastVehicleSyncAt;
   final String? syncMessage;
   final String? updatedAt;
 
@@ -53,6 +55,7 @@ class SetupState {
       email: json['email'] as String?,
       countryCode: json['countryCode'] as String?,
       redirectUrl: json['redirectUrl'] as String?,
+      lastVehicleSyncAt: json['lastVehicleSyncAt'] as String?,
       syncMessage: json['syncMessage'] as String?,
       updatedAt: json['updatedAt'] as String?,
     );
