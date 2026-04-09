@@ -9,6 +9,52 @@ const setupRoutes = require('./routes/setupRoutes');
 const vehicleRoutes = require('./routes/vehicleRoutes');
 const settingsRoutes = require('./routes/settingsRoutes');
 const { createMcpRouter } = require('./mcp/server');
+const setupService = require('./services/setupService');
+
+const AUTO_SYNC_ALLOWED_STATES = new Set(['connected', 'otp_requested', 'ready_to_sync', 'synced']);
+
+function startAutoSyncLoop() {
+  const intervalMs = config.autoSyncIntervalMs;
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    console.log('Automatic vehicle sync is disabled (PSA_AUTO_SYNC_INTERVAL_MS <= 0).');
+    return () => {};
+  }
+
+  let running = false;
+  const runTick = async () => {
+    if (running) {
+      return;
+    }
+    running = true;
+    try {
+      const state = await setupService.getSetupState();
+      if (!AUTO_SYNC_ALLOWED_STATES.has(state.status)) {
+        return;
+      }
+      const vehicles = await setupService.syncVehicles();
+      console.log(`Automatic vehicle sync completed (${vehicles.length} vehicle(s)).`);
+    } catch (error) {
+      console.error(`Automatic vehicle sync failed: ${error.message}`);
+    } finally {
+      running = false;
+    }
+  };
+
+  const timer = setInterval(() => {
+    void runTick();
+  }, intervalMs);
+  if (typeof timer.unref === 'function') {
+    timer.unref();
+  }
+
+  const warmupMs = Math.max(0, config.autoSyncWarmupMs);
+  setTimeout(() => {
+    void runTick();
+  }, warmupMs);
+
+  console.log(`Automatic vehicle sync enabled every ${Math.round(intervalMs / 60000)} minute(s).`);
+  return () => clearInterval(timer);
+}
 
 function createApp() {
   const app = express();
@@ -56,9 +102,14 @@ function createApp() {
 async function startServer() {
   await initializeSchema();
   const app = createApp();
-  return app.listen(config.port, config.host, () => {
+  const server = app.listen(config.port, config.host, () => {
     console.log(`PSA Controller backend listening on http://${config.host}:${config.port}`);
   });
+  const stopAutoSync = startAutoSyncLoop();
+  server.on('close', () => {
+    stopAutoSync();
+  });
+  return server;
 }
 
 if (require.main === module) {

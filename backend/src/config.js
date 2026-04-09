@@ -13,4 +13,6 @@ module.exports = {
   allowedHosts: (process.env.ALLOWED_HOSTS || '').split(',').map((value) => value.trim()).filter(Boolean),
   mcpPath: process.env.MCP_PATH || '/mcp',
   psaBridgeHome: process.env.PSA_BRIDGE_HOME || path.join(ROOT_DIR, 'psa-runtime'),
+  autoSyncIntervalMs: Number(process.env.PSA_AUTO_SYNC_INTERVAL_MS || 1000 * 60 * 60),
+  autoSyncWarmupMs: Number(process.env.PSA_AUTO_SYNC_WARMUP_MS || 1000 * 60),
 };
