@@ -1,6 +1,7 @@
 const { z } = require('zod');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
+const { SSEServerTransport } = require('@modelcontextprotocol/sdk/server/sse.js');
 const { createMcpExpressApp } = require('@modelcontextprotocol/sdk/server/express.js');
 const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
 const authService = require('../services/authService');
@@ -128,11 +129,13 @@ function buildMcpServer(apiKeyRecord) {
 
 function createMcpRouter() {
   const app = createMcpExpressApp();
-  const sessions = new Map();
+  const streamableSessions = new Map();
+  const sseSessions = new Map();
+  const sseMessagesPath = `${config.mcpPath}/messages`;
 
-  async function resolveSessionContext(req) {
+  async function resolveStreamableContext(req) {
     const sessionId = req.header('mcp-session-id');
-    const session = sessionId ? sessions.get(sessionId) : null;
+    const session = sessionId ? streamableSessions.get(sessionId) : null;
     const apiKeyRecord = await authenticateMcpRequest(req);
 
     if (session && apiKeyRecord && !sameApiKey(apiKeyRecord, session.apiKeyRecord)) {
@@ -153,7 +156,45 @@ function createMcpRouter() {
   }
 
   app.all(config.mcpPath, async (req, res) => {
-    const context = await resolveSessionContext(req);
+    const accept = (req.header('accept') || '').toLowerCase();
+    const wantsSse = req.method === 'GET' && accept.includes('text/event-stream');
+
+    if (wantsSse && !req.header('mcp-session-id')) {
+      const apiKeyRecord = await authenticateMcpRequest(req);
+      if (!apiKeyRecord) {
+        res.status(401).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32001,
+            message: 'Missing or invalid API key.',
+          },
+          id: null,
+        });
+        return;
+      }
+
+      const transport = new SSEServerTransport(sseMessagesPath, res);
+      const server = buildMcpServer(apiKeyRecord);
+      sseSessions.set(transport.sessionId, {
+        transport,
+        apiKeyRecord,
+        server,
+      });
+
+      res.on('close', () => {
+        const session = sseSessions.get(transport.sessionId);
+        sseSessions.delete(transport.sessionId);
+        if (session) {
+          void session.transport.close();
+          void session.server.close();
+        }
+      });
+
+      await server.connect(transport);
+      return;
+    }
+
+    const context = await resolveStreamableContext(req);
     if (context.error) {
       res.status(context.error.code).json({
         jsonrpc: '2.0',
@@ -198,21 +239,27 @@ function createMcpRouter() {
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: undefined,
           onsessioninitialized: (sessionId) => {
-            sessions.set(sessionId, {
+            streamableSessions.set(sessionId, {
               transport,
               apiKeyRecord: context.apiKeyRecord,
+              server,
             });
           },
         });
 
+        const server = buildMcpServer(context.apiKeyRecord);
+
         transport.onclose = () => {
           const sid = transport.sessionId;
           if (sid) {
-            sessions.delete(sid);
+            const session = streamableSessions.get(sid);
+            streamableSessions.delete(sid);
+            if (session) {
+              void session.server.close();
+            }
           }
         };
 
-        const server = buildMcpServer(context.apiKeyRecord);
         await server.connect(transport);
       }
 
@@ -229,6 +276,37 @@ function createMcpRouter() {
         });
       }
     }
+  });
+
+  app.post(sseMessagesPath, async (req, res) => {
+    const sessionId = req.query.sessionId;
+    const session = sessionId ? sseSessions.get(sessionId) : null;
+    if (!session) {
+      res.status(400).json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message: 'Bad Request: Unknown SSE MCP session.',
+        },
+        id: null,
+      });
+      return;
+    }
+
+    const apiKeyRecord = await authenticateMcpRequest(req);
+    if (apiKeyRecord && !sameApiKey(apiKeyRecord, session.apiKeyRecord)) {
+      res.status(403).json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32003,
+          message: 'MCP session belongs to a different API key.',
+        },
+        id: null,
+      });
+      return;
+    }
+
+    await session.transport.handlePostMessage(req, res, req.body);
   });
 
   return app;
