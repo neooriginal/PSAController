@@ -2,6 +2,7 @@ const { z } = require('zod');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const { createMcpExpressApp } = require('@modelcontextprotocol/sdk/server/express.js');
+const { isInitializeRequest } = require('@modelcontextprotocol/sdk/types.js');
 const authService = require('../services/authService');
 const vehicleService = require('../services/vehicleService');
 const settingsService = require('../services/settingsService');
@@ -19,6 +20,10 @@ async function authenticateMcpRequest(req) {
 
 function hasScope(key, scope) {
   return key?.scopes?.includes(scope);
+}
+
+function sameApiKey(a, b) {
+  return a?.id && b?.id && a.id === b.id;
 }
 
 function buildMcpServer(apiKeyRecord) {
@@ -123,10 +128,45 @@ function buildMcpServer(apiKeyRecord) {
 
 function createMcpRouter() {
   const app = createMcpExpressApp();
+  const sessions = new Map();
 
-  app.post(config.mcpPath, async (req, res) => {
+  async function resolveSessionContext(req) {
+    const sessionId = req.header('mcp-session-id');
+    const session = sessionId ? sessions.get(sessionId) : null;
     const apiKeyRecord = await authenticateMcpRequest(req);
-    if (!apiKeyRecord) {
+
+    if (session && apiKeyRecord && !sameApiKey(apiKeyRecord, session.apiKeyRecord)) {
+      return {
+        error: {
+          code: 403,
+          message: 'MCP session belongs to a different API key.',
+          jsonRpcCode: -32003,
+        },
+      };
+    }
+
+    return {
+      sessionId,
+      session,
+      apiKeyRecord: apiKeyRecord || session?.apiKeyRecord || null,
+    };
+  }
+
+  app.all(config.mcpPath, async (req, res) => {
+    const context = await resolveSessionContext(req);
+    if (context.error) {
+      res.status(context.error.code).json({
+        jsonrpc: '2.0',
+        error: {
+          code: context.error.jsonRpcCode,
+          message: context.error.message,
+        },
+        id: null,
+      });
+      return;
+    }
+
+    if (!context.apiKeyRecord) {
       res.status(401).json({
         jsonrpc: '2.0',
         error: {
@@ -138,16 +178,45 @@ function createMcpRouter() {
       return;
     }
 
-    const server = buildMcpServer(apiKeyRecord);
-
     try {
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      await server.connect(transport);
+      let transport = context.session?.transport;
+
+      if (!transport) {
+        const isInitPost = req.method === 'POST' && isInitializeRequest(req.body);
+        if (!isInitPost) {
+          res.status(400).json({
+            jsonrpc: '2.0',
+            error: {
+              code: -32000,
+              message: 'Bad Request: No valid MCP session. Start with an initialize POST request.',
+            },
+            id: null,
+          });
+          return;
+        }
+
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: undefined,
+          onsessioninitialized: (sessionId) => {
+            sessions.set(sessionId, {
+              transport,
+              apiKeyRecord: context.apiKeyRecord,
+            });
+          },
+        });
+
+        transport.onclose = () => {
+          const sid = transport.sessionId;
+          if (sid) {
+            sessions.delete(sid);
+          }
+        };
+
+        const server = buildMcpServer(context.apiKeyRecord);
+        await server.connect(transport);
+      }
+
       await transport.handleRequest(req, res, req.body);
-      res.on('close', () => {
-        transport.close();
-        server.close();
-      });
     } catch (error) {
       if (!res.headersSent) {
         res.status(500).json({
@@ -160,17 +229,6 @@ function createMcpRouter() {
         });
       }
     }
-  });
-
-  app.get(config.mcpPath, (_req, res) => {
-    res.status(405).json({
-      jsonrpc: '2.0',
-      error: {
-        code: -32000,
-        message: 'Method not allowed.',
-      },
-      id: null,
-    });
   });
 
   return app;
