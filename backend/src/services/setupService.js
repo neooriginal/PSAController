@@ -53,6 +53,7 @@ async function getSetupState() {
     email: row?.email || null,
     countryCode: row?.country_code || null,
     redirectUrl: row?.redirect_url || null,
+    lastVehicleSyncAt: row?.last_vehicle_sync_at || null,
     syncMessage: row?.sync_message || null,
     updatedAt: row?.updated_at || null,
   };
@@ -66,15 +67,16 @@ async function updateSetupState(fields) {
     email: fields.email ?? current.email,
     countryCode: fields.countryCode ?? current.countryCode,
     redirectUrl: fields.redirectUrl ?? current.redirectUrl,
+    lastVehicleSyncAt: fields.lastVehicleSyncAt ?? current.lastVehicleSyncAt,
     syncMessage: fields.syncMessage ?? current.syncMessage,
     updatedAt: new Date().toISOString(),
   };
 
   await db.run(
     `UPDATE psa_setup_state
-     SET status = ?, brand = ?, email = ?, country_code = ?, redirect_url = ?, sync_message = ?, updated_at = ?
+     SET status = ?, brand = ?, email = ?, country_code = ?, redirect_url = ?, last_vehicle_sync_at = ?, sync_message = ?, updated_at = ?
      WHERE id = 1`,
-    [next.status, next.brand, next.email, next.countryCode, next.redirectUrl, next.syncMessage, next.updatedAt],
+    [next.status, next.brand, next.email, next.countryCode, next.redirectUrl, next.lastVehicleSyncAt, next.syncMessage, next.updatedAt],
   );
   return next;
 }
@@ -275,9 +277,11 @@ async function syncVehicles() {
   const provider = getPsaProvider();
   let vehicles = [];
   let message = 'No vehicles were returned.';
+  let lastVehicleSyncAt = null;
 
   try {
     vehicles = await provider.syncVehicles();
+    lastVehicleSyncAt = new Date().toISOString();
     await upsertVehicles(
       vehicles.map((vehicle) => ({
         vin: vehicle.vin,
@@ -318,6 +322,7 @@ async function syncVehicles() {
 
   await updateSetupState({
     status: vehicles.length > 0 ? 'synced' : 'degraded',
+    lastVehicleSyncAt,
     syncMessage: message,
   });
   return vehicles;
@@ -342,6 +347,7 @@ async function resetOnboarding() {
     email: null,
     countryCode: null,
     redirectUrl: null,
+    lastVehicleSyncAt: null,
     syncMessage: 'Onboarding reset. Please connect your PSA account again.',
   });
 

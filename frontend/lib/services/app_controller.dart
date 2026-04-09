@@ -20,6 +20,7 @@ class AppController extends ChangeNotifier {
   List<AuditEventRecord> auditEvents = const [];
   Map<String, String> settings = const {};
   String? selectedVin;
+  DateTime? lastRefreshedAt;
 
   VehicleSummary? get selectedVehicle {
     if (vehicles.isEmpty) {
@@ -288,6 +289,7 @@ class AppController extends ChangeNotifier {
       _loadAdminData(),
       _loadSettings(),
     ]);
+    lastRefreshedAt = DateTime.now();
   }
 
   Future<void> _loadSetupState() async {
@@ -400,5 +402,6 @@ class AppController extends ChangeNotifier {
     settings = const {};
     setupState = null;
     selectedVin = null;
+    lastRefreshedAt = null;
   }
 }

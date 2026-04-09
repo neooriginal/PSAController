@@ -39,10 +39,17 @@ async function initializeSchema() {
       email TEXT,
       country_code TEXT,
       redirect_url TEXT,
+      last_vehicle_sync_at TEXT,
       sync_message TEXT,
       updated_at TEXT NOT NULL
     )
   `);
+
+  try {
+    await db.run('ALTER TABLE psa_setup_state ADD COLUMN last_vehicle_sync_at TEXT');
+  } catch (_error) {
+    // Ignore duplicate-column migration attempts on existing databases.
+  }
 
   await db.run(`
     CREATE TABLE IF NOT EXISTS psa_credentials (

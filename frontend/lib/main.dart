@@ -1435,6 +1435,20 @@ class _TopBar extends StatelessWidget {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final compact = constraints.maxWidth < 860;
+          final lastVehicleSyncAt = controller.setupState?.lastVehicleSyncAt;
+          String lastCarSyncLabel = 'Last car sync: --';
+          if (lastVehicleSyncAt != null) {
+            final parsed = DateTime.tryParse(lastVehicleSyncAt);
+            if (parsed != null) {
+              final text = parsed
+                  .toLocal()
+                  .toIso8601String()
+                  .replaceFirst('T', ' ')
+                  .split('.')
+                  .first;
+              lastCarSyncLabel = 'Last car sync: $text';
+            }
+          }
           final info = Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1459,6 +1473,14 @@ class _TopBar extends StatelessWidget {
                   style: Theme.of(context).textTheme.labelMedium?.copyWith(
                     fontWeight: FontWeight.w700,
                   ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                lastCarSyncLabel,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFF5E5A54),
+                  fontWeight: FontWeight.w600,
                 ),
               ),
             ],
