@@ -1508,6 +1508,10 @@ class _TopBar extends StatelessWidget {
                     : controller.refreshDashboard,
                 child: const Text('Refresh'),
               ),
+              FilledButton.tonal(
+                onPressed: controller.loading ? null : controller.syncVehicles,
+                child: const Text('Sync cars'),
+              ),
               TextButton(
                 onPressed: controller.loading ? null : controller.logout,
                 child: const Text('Logout'),
