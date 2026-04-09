@@ -3,11 +3,18 @@ FROM node:22-bookworm-slim
 WORKDIR /app
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends openssl python3 python3-pip chromium \
+  && apt-get install -y --no-install-recommends \
+    openssl \
+    python3 \
+    python3-pip \
+    libsqlite3-dev \
+    make \
+    g++ \
+    chromium \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm_config_build_from_source=true npm ci --omit=dev
 
 COPY src ./src
 COPY psa_bridge ./psa_bridge
