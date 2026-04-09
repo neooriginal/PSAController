@@ -136,7 +136,7 @@ async function recoverAuthorization(reason) {
   }
 }
 
-async function submitCredentials(credentials, actor) {
+async function submitCredentials(credentials) {
   await saveCredentials(credentials);
   const provider = getPsaProvider();
   let nextState;
@@ -165,7 +165,7 @@ async function submitCredentials(credentials, actor) {
   return nextState;
 }
 
-async function connect(actor, payload) {
+async function connect(payload) {
   const provider = getPsaProvider();
   const current = await getSetupState();
   let nextState;
@@ -194,7 +194,7 @@ async function connect(actor, payload) {
   return nextState;
 }
 
-async function autoConnect(actor) {
+async function autoConnect() {
   const current = await getSetupState();
   const credentials = await getSavedCredentials();
   if (!credentials?.email || !credentials?.password) {
@@ -226,10 +226,10 @@ async function autoConnect(actor) {
     });
   }
 
-  return connect(actor, { code: captured.code });
+  return connect({ code: captured.code });
 }
 
-async function requestOtp(actor) {
+async function requestOtp() {
   const provider = getPsaProvider();
   const current = await getSetupState();
   let nextState;
@@ -250,7 +250,7 @@ async function requestOtp(actor) {
   return nextState;
 }
 
-async function confirmOtp(actor, payload) {
+async function confirmOtp(payload) {
   const provider = getPsaProvider();
   const current = await getSetupState();
   let nextState;
@@ -271,7 +271,7 @@ async function confirmOtp(actor, payload) {
   return nextState;
 }
 
-async function syncVehicles(actor) {
+async function syncVehicles() {
   const provider = getPsaProvider();
   let vehicles = [];
   let message = 'No vehicles were returned.';
@@ -323,7 +323,7 @@ async function syncVehicles(actor) {
   return vehicles;
 }
 
-async function importVehicleData(actor, vin, payload) {
+async function importVehicleData(vin, payload) {
   await saveImportedVehicleData(vin, payload);
 }
 

@@ -23,7 +23,7 @@ router.post('/setup/session', async (req, res, next) => {
       email,
       password,
       countryCode,
-    }, req.user));
+    }));
   } catch (error) {
     next(error);
   }
@@ -31,7 +31,7 @@ router.post('/setup/session', async (req, res, next) => {
 
 router.post('/setup/connect', async (req, res, next) => {
   try {
-    res.json(await setupService.connect(req.user, req.body || {}));
+    res.json(await setupService.connect(req.body || {}));
   } catch (error) {
     next(error);
   }
@@ -39,7 +39,7 @@ router.post('/setup/connect', async (req, res, next) => {
 
 router.post('/setup/connect/auto', async (req, res, next) => {
   try {
-    res.json(await setupService.autoConnect(req.user));
+    res.json(await setupService.autoConnect());
   } catch (error) {
     next(error);
   }
@@ -47,7 +47,7 @@ router.post('/setup/connect/auto', async (req, res, next) => {
 
 router.post('/setup/otp/request', async (req, res, next) => {
   try {
-    res.json(await setupService.requestOtp(req.user));
+    res.json(await setupService.requestOtp());
   } catch (error) {
     next(error);
   }
@@ -60,7 +60,7 @@ router.post('/setup/otp/confirm', async (req, res, next) => {
       res.status(400).json({ error: 'smsCode and pin are required.' });
       return;
     }
-    res.json(await setupService.confirmOtp(req.user, { smsCode, pin }));
+    res.json(await setupService.confirmOtp({ smsCode, pin }));
   } catch (error) {
     next(error);
   }
@@ -68,7 +68,7 @@ router.post('/setup/otp/confirm', async (req, res, next) => {
 
 router.post('/setup/sync', async (req, res, next) => {
   try {
-    res.json({ vehicles: await setupService.syncVehicles(req.user) });
+    res.json({ vehicles: await setupService.syncVehicles() });
   } catch (error) {
     next(error);
   }
@@ -76,7 +76,7 @@ router.post('/setup/sync', async (req, res, next) => {
 
 router.post('/setup/import/:vin', async (req, res, next) => {
   try {
-    await setupService.importVehicleData(req.user, req.params.vin, req.body || {});
+    await setupService.importVehicleData(req.params.vin, req.body || {});
     res.status(204).end();
   } catch (error) {
     next(error);

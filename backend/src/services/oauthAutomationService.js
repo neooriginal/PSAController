@@ -1,3 +1,5 @@
+const fs = require('fs');
+
 function parseAuthorizationCode(raw) {
   if (!raw) {
     return null;
@@ -51,6 +53,62 @@ async function clickXPath(page, xpath) {
   await handle.click();
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForAuthorizationCode(page, timeoutMs) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const currentUrl = page.url();
+    const code = parseAuthorizationCode(currentUrl);
+    if (code) {
+      return {
+        code,
+        finalUrl: currentUrl,
+      };
+    }
+
+    const remaining = timeoutMs - (Date.now() - startedAt);
+    if (remaining <= 0) {
+      break;
+    }
+
+    try {
+      await page.waitForNavigation({
+        waitUntil: 'domcontentloaded',
+        timeout: Math.min(remaining, 5000),
+      });
+    } catch (_error) {
+      // Navigation is not guaranteed on every loop. Keep polling URL.
+    }
+
+    await sleep(150);
+  }
+
+  throw new Error('Automatic login completed but no authorization code was found.');
+}
+
+function resolveExecutablePath() {
+  const configured =
+    process.env.PSA_AUTOAUTH_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
+  if (configured && fs.existsSync(configured)) {
+    return configured;
+  }
+
+  const candidates = [
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/snap/bin/chromium',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  ];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
 async function automateAuthorization({ redirectUrl, email, password }) {
   let puppeteer;
   try {
@@ -76,11 +134,13 @@ async function automateAuthorization({ redirectUrl, email, password }) {
       '--disable-dev-shm-usage',
     ],
   };
-  const executablePath =
-    process.env.PSA_AUTOAUTH_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH;
-  if (executablePath) {
-    launchOptions.executablePath = executablePath;
+  const executablePath = resolveExecutablePath();
+  if (!executablePath) {
+    throw new Error(
+      'No Chrome/Chromium binary found for automatic login. Set PSA_AUTOAUTH_EXECUTABLE_PATH (or PUPPETEER_EXECUTABLE_PATH), or use manual code paste.',
+    );
   }
+  launchOptions.executablePath = executablePath;
 
   const browser = await puppeteer.launch(launchOptions);
   try {
@@ -92,21 +152,7 @@ async function automateAuthorization({ redirectUrl, email, password }) {
     await typeIntoXPath(page, selectorConfig.passwordXPath, password);
     await clickXPath(page, selectorConfig.submitXPath);
 
-    await page.waitForFunction(
-      () => window.location.href.includes('code='),
-      { timeout: timeoutMs },
-    );
-
-    const finalUrl = page.url();
-    const code = parseAuthorizationCode(finalUrl);
-    if (!code) {
-      throw new Error('Automatic login completed but no authorization code was found.');
-    }
-
-    return {
-      code,
-      finalUrl,
-    };
+    return waitForAuthorizationCode(page, timeoutMs);
   } finally {
     await browser.close();
   }
