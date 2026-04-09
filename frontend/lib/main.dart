@@ -448,6 +448,30 @@ class _SetupScreenState extends State<SetupScreen>
     );
   }
 
+  Future<void> _copyRedirectUrl(String url) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: url));
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Link copied to clipboard.')),
+      );
+    } catch (_error) {
+      authCodeController.text = url;
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Clipboard access is blocked in this browser context. URL was placed in the field below for manual copy.',
+          ),
+        ),
+      );
+    }
+  }
+
   Widget _buildStepCard(BuildContext context) {
     switch (stepIndex) {
       case 0:
@@ -539,16 +563,7 @@ class _SetupScreenState extends State<SetupScreen>
                       children: [
                         OutlinedButton.icon(
                           onPressed: () async {
-                            await Clipboard.setData(
-                              ClipboardData(text: redirectUrl),
-                            );
-                            if (context.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Link copied to clipboard.'),
-                                ),
-                              );
-                            }
+                            await _copyRedirectUrl(redirectUrl);
                           },
                           icon: const Icon(Icons.copy, size: 16),
                           label: const Text('Copy Link'),
@@ -1267,6 +1282,7 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     final keys = widget.controller.mcpKeys;
+    final mcpEndpoint = Uri.base.replace(path: '/mcp', query: '').toString();
 
     return SingleChildScrollView(
       child: Column(
@@ -1313,10 +1329,17 @@ class _SettingsPageState extends State<SettingsPage> {
                 Text('MCP keys', style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 8),
                 Text(
-                  'Use the Model Context Protocol to control and query your vehicle directly from compatible AI clients (like Claude). The protocol URL to supply is: http://<your-ip>:8787/mcp',
+                  'Use the Model Context Protocol to control and query your vehicle directly from compatible AI clients (like Claude). The protocol URL detected for this page is:',
                   style: Theme.of(
                     context,
                   ).textTheme.bodyMedium?.copyWith(color: Colors.grey[700]),
+                ),
+                const SizedBox(height: 8),
+                SelectableText(
+                  mcpEndpoint,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 16),
                 TextField(
