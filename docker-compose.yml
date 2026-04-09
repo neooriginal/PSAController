@@ -1,0 +1,36 @@
+services:
+  backend:
+    image: neooriginal/psacontroller-backend
+    build:
+      context: ./backend
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      DB_PATH: /data/data.sqlite3
+    volumes:
+      - psa-controller-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:8787/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  frontend:
+    image: neooriginal/psacontroller-frontend
+    build:
+      context: ./frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  psa-controller-data:

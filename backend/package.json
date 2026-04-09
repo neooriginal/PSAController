@@ -1,0 +1,31 @@
+{
+  "name": "psa-controller-backend",
+  "version": "0.1.0",
+  "description": "PSA Controller backend with auth, sqlite, REST API, and MCP host",
+  "main": "src/server.js",
+  "scripts": {
+    "dev": "node src/server.js",
+    "start": "node src/server.js"
+  },
+  "keywords": [
+    "psa",
+    "mcp",
+    "express",
+    "sqlite"
+  ],
+  "author": "",
+  "license": "GPL-3.0",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "cookie-parser": "^1.4.7",
+    "express": "^5.2.1",
+    "fast-xml-parser": "^5.5.11",
+    "helmet": "^8.1.0",
+    "mqtt": "^5.15.1",
+    "sqlite3": "^6.0.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "supertest": "^7.2.2"
+  }
+}

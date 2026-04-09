@@ -1,0 +1,298 @@
+const db = require('../db/sqlite');
+const fs = require('fs/promises');
+const path = require('path');
+const config = require('../config');
+const { getPsaProvider } = require('../psa');
+const { upsertVehicles, saveImportedVehicleData } = require('./vehicleService');
+
+function isReauthError(error) {
+  const message = (error?.message || '').toLowerCase();
+  return (
+    message.includes('invalid_grant') ||
+    message.includes('grant is invalid') ||
+    message.includes('token is invalid') ||
+    message.includes('refresh token')
+  );
+}
+
+async function markReauthRequired(reason) {
+  return updateSetupState({
+    status: 'reauth_required',
+    redirectUrl: null,
+    syncMessage:
+      reason ||
+      'PSA session expired. Please redo onboarding to refresh authorization.',
+  });
+}
+
+async function clearRuntimeSessionFiles() {
+  const runtimeHome = config.psaBridgeHome;
+  const files = [
+    path.join(runtimeHome, 'session.json'),
+    path.join(runtimeHome, 'otp.bin'),
+  ];
+  for (const file of files) {
+    try {
+      await fs.unlink(file);
+    } catch (_error) {
+      // Ignore missing files.
+    }
+  }
+}
+
+async function getSetupState() {
+  const row = await db.get('SELECT * FROM psa_setup_state WHERE id = 1');
+  return {
+    status: row?.status || 'not_started',
+    brand: row?.brand || null,
+    email: row?.email || null,
+    countryCode: row?.country_code || null,
+    redirectUrl: row?.redirect_url || null,
+    syncMessage: row?.sync_message || null,
+    updatedAt: row?.updated_at || null,
+  };
+}
+
+async function updateSetupState(fields) {
+  const current = await getSetupState();
+  const next = {
+    status: fields.status ?? current.status,
+    brand: fields.brand ?? current.brand,
+    email: fields.email ?? current.email,
+    countryCode: fields.countryCode ?? current.countryCode,
+    redirectUrl: fields.redirectUrl ?? current.redirectUrl,
+    syncMessage: fields.syncMessage ?? current.syncMessage,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await db.run(
+    `UPDATE psa_setup_state
+     SET status = ?, brand = ?, email = ?, country_code = ?, redirect_url = ?, sync_message = ?, updated_at = ?
+     WHERE id = 1`,
+    [next.status, next.brand, next.email, next.countryCode, next.redirectUrl, next.syncMessage, next.updatedAt],
+  );
+  return next;
+}
+
+async function saveCredentials(credentials) {
+  await db.run(
+    `INSERT INTO psa_credentials (id, brand, email, password, country_code, updated_at)
+     VALUES (1, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       brand = excluded.brand,
+       email = excluded.email,
+       password = excluded.password,
+       country_code = excluded.country_code,
+       updated_at = excluded.updated_at`,
+    [
+      credentials.brand,
+      credentials.email,
+      credentials.password,
+      credentials.countryCode,
+      new Date().toISOString(),
+    ],
+  );
+}
+
+async function submitCredentials(credentials, actor) {
+  await saveCredentials(credentials);
+  const provider = getPsaProvider();
+  let nextState;
+
+  try {
+    const response = await provider.submitCredentials(credentials);
+    nextState = await updateSetupState({
+      status: response.status,
+      brand: credentials.brand,
+      email: credentials.email,
+      countryCode: credentials.countryCode,
+      redirectUrl: response.redirectUrl,
+      syncMessage: response.message,
+    });
+  } catch (error) {
+    nextState = await updateSetupState({
+      status: 'degraded',
+      brand: credentials.brand,
+      email: credentials.email,
+      countryCode: credentials.countryCode,
+      redirectUrl: null,
+      syncMessage: `PSA credential step failed: ${error.message}`,
+    });
+  }
+
+  return nextState;
+}
+
+async function connect(actor, payload) {
+  const provider = getPsaProvider();
+  const current = await getSetupState();
+  let nextState;
+
+  try {
+    const result = await provider.connect(payload);
+    nextState = await updateSetupState({
+      status: result.status,
+      syncMessage: result.message,
+      redirectUrl: result.redirectUrl || null,
+    });
+  } catch (error) {
+    if (isReauthError(error)) {
+      nextState = await markReauthRequired(
+        'PSA authentication expired. Please redo onboarding.',
+      );
+    } else {
+      nextState = await updateSetupState({
+        status: current.status,
+        syncMessage: `PSA authentication failed: ${error.message}`,
+        redirectUrl: null,
+      });
+    }
+  }
+
+  return nextState;
+}
+
+async function requestOtp(actor) {
+  const provider = getPsaProvider();
+  const current = await getSetupState();
+  let nextState;
+
+  try {
+    const result = await provider.requestOtp();
+    nextState = await updateSetupState({
+      status: result.status,
+      syncMessage: result.message,
+    });
+  } catch (error) {
+    if (isReauthError(error)) {
+      nextState = await markReauthRequired(
+        'PSA authorization expired before OTP request. Please redo onboarding.',
+      );
+    } else {
+      nextState = await updateSetupState({
+        status: current.status,
+        syncMessage: `SMS verification failed: ${error.message}`,
+      });
+    }
+  }
+
+  return nextState;
+}
+
+async function confirmOtp(actor, payload) {
+  const provider = getPsaProvider();
+  const current = await getSetupState();
+  let nextState;
+
+  try {
+    const result = await provider.confirmOtp(payload);
+    nextState = await updateSetupState({
+      status: result.status,
+      syncMessage: result.message,
+    });
+  } catch (error) {
+    if (isReauthError(error)) {
+      nextState = await markReauthRequired(
+        'PSA authorization expired during OTP confirmation. Please redo onboarding.',
+      );
+    } else {
+      nextState = await updateSetupState({
+        status: current.status,
+        syncMessage: `OTP confirmation failed: ${error.message}`,
+      });
+    }
+  }
+
+  return nextState;
+}
+
+async function syncVehicles(actor) {
+  const provider = getPsaProvider();
+  let vehicles = [];
+  let message = 'No vehicles were returned.';
+
+  try {
+    vehicles = await provider.syncVehicles();
+    await upsertVehicles(
+      vehicles.map((vehicle) => ({
+        vin: vehicle.vin,
+        label: vehicle.label || vehicle.vin,
+        brand: vehicle.brand || 'PSA',
+        model: vehicle.model || 'Unknown',
+        type: vehicle.type || 'electric',
+        capabilities: vehicle.capabilities || [],
+        snapshot: {
+          batteryLevel: vehicle.status?.energy?.[0]?.level ?? vehicle.snapshot?.batteryLevel ?? null,
+          batterySoh: vehicle.snapshot?.batterySoh ?? null,
+          mileage: vehicle.status?.timed_odometer?.mileage ?? vehicle.snapshot?.mileage ?? null,
+          chargeStatus: vehicle.snapshot?.chargeStatus ?? null,
+          preconditioningStatus: vehicle.snapshot?.preconditioningStatus ?? null,
+          locked: vehicle.snapshot?.locked ?? null,
+          latitude: vehicle.last_position?.geometry?.coordinates?.[1] ?? vehicle.snapshot?.latitude ?? null,
+          longitude: vehicle.last_position?.geometry?.coordinates?.[0] ?? vehicle.snapshot?.longitude ?? null,
+        },
+      })),
+    );
+    for (const vehicle of vehicles) {
+      await saveImportedVehicleData(vehicle.vin, {
+        trips: vehicle.trips || [],
+        chargings: vehicle.chargings || [],
+        positions: vehicle.positions || [],
+      });
+    }
+    message = `${vehicles.length} vehicle(s) synced.`;
+  } catch (error) {
+    if (isReauthError(error)) {
+      await markReauthRequired(
+        'PSA session expired during vehicle sync. Please redo onboarding.',
+      );
+      return [];
+    }
+    message = `Sync failed. Backend remains available in degraded mode: ${error.message}`;
+  }
+
+  await updateSetupState({
+    status: vehicles.length > 0 ? 'synced' : 'degraded',
+    syncMessage: message,
+  });
+  return vehicles;
+}
+
+async function importVehicleData(actor, vin, payload) {
+  await saveImportedVehicleData(vin, payload);
+}
+
+async function resetOnboarding() {
+  await db.run('DELETE FROM psa_credentials');
+  await db.run('DELETE FROM battery_curves');
+  await db.run('DELETE FROM charging_sessions');
+  await db.run('DELETE FROM positions');
+  await db.run('DELETE FROM trips');
+  await db.run('DELETE FROM vehicle_snapshots');
+  await db.run('DELETE FROM vehicles');
+
+  await updateSetupState({
+    status: 'not_started',
+    brand: null,
+    email: null,
+    countryCode: null,
+    redirectUrl: null,
+    syncMessage: 'Onboarding reset. Please connect your PSA account again.',
+  });
+
+  await clearRuntimeSessionFiles();
+  return getSetupState();
+}
+
+module.exports = {
+  getSetupState,
+  submitCredentials,
+  connect,
+  requestOtp,
+  confirmOtp,
+  syncVehicles,
+  importVehicleData,
+  resetOnboarding,
+  markReauthRequired,
+  isReauthError,
+};

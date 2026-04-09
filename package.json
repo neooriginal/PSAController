@@ -1,0 +1,19 @@
+{
+  "name": "psa-controller",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "backend"
+  ],
+  "scripts": {
+    "backend:start": "npm --prefix backend start",
+    "backend:test": "npm --prefix backend test",
+    "start:backend": "./scripts/start-backend.sh",
+    "start:frontend": "./scripts/start-frontend.sh",
+    "start:dev": "./scripts/start-dev.sh",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down",
+    "frontend:run": "cd frontend && flutter run -d chrome",
+    "frontend:test": "cd frontend && flutter test"
+  }
+}

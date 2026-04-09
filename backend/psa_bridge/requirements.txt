@@ -1,0 +1,4 @@
+psa-car-controller
+paho-mqtt
+requests
+pycryptodome

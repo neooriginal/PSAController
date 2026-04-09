@@ -1,0 +1,8 @@
+node_modules
+.venv
+npm-debug.log*
+test
+data.sqlite3
+data.sqlite3-shm
+data.sqlite3-wal
+psa-runtime
