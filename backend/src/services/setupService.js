@@ -3,6 +3,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const config = require('../config');
 const { getPsaProvider } = require('../psa');
+const { automateAuthorization } = require('./oauthAutomationService');
 const { upsertVehicles, saveImportedVehicleData } = require('./vehicleService');
 
 function isReauthError(error) {
@@ -193,6 +194,41 @@ async function connect(actor, payload) {
   return nextState;
 }
 
+async function autoConnect(actor) {
+  const current = await getSetupState();
+  const credentials = await getSavedCredentials();
+  if (!credentials?.email || !credentials?.password) {
+    return updateSetupState({
+      status: current.status,
+      syncMessage:
+        'Automatic login needs saved credentials. Submit onboarding credentials first or use manual code paste.',
+    });
+  }
+  if (!current.redirectUrl) {
+    return updateSetupState({
+      status: current.status,
+      syncMessage:
+        'Missing PSA redirect URL for automatic login. Restart step 1 to generate a fresh link, or paste code manually.',
+    });
+  }
+
+  let captured;
+  try {
+    captured = await automateAuthorization({
+      redirectUrl: current.redirectUrl,
+      email: credentials.email,
+      password: credentials.password,
+    });
+  } catch (error) {
+    return updateSetupState({
+      status: current.status,
+      syncMessage: `Automatic browser login failed: ${error.message}`,
+    });
+  }
+
+  return connect(actor, { code: captured.code });
+}
+
 async function requestOtp(actor) {
   const provider = getPsaProvider();
   const current = await getSetupState();
@@ -317,6 +353,7 @@ module.exports = {
   getSetupState,
   submitCredentials,
   connect,
+  autoConnect,
   requestOtp,
   confirmOtp,
   syncVehicles,

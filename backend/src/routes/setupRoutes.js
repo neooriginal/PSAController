@@ -37,6 +37,14 @@ router.post('/setup/connect', async (req, res, next) => {
   }
 });
 
+router.post('/setup/connect/auto', async (req, res, next) => {
+  try {
+    res.json(await setupService.autoConnect(req.user));
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post('/setup/otp/request', async (req, res, next) => {
   try {
     res.json(await setupService.requestOtp(req.user));

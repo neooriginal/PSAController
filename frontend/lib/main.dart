@@ -590,13 +590,31 @@ class _SetupScreenState extends State<SetupScreen>
               ),
             ),
             const SizedBox(height: 24),
-            FilledButton(
-              onPressed: widget.controller.loading
-                  ? null
-                  : () => widget.controller.connectSetup(
-                      authCodeController.text.trim(),
-                    ),
-              child: const Text('Complete authentication'),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                FilledButton(
+                  onPressed: widget.controller.loading
+                      ? null
+                      : () => widget.controller.connectSetup(
+                          authCodeController.text.trim(),
+                        ),
+                  child: const Text('Complete authentication'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: widget.controller.loading
+                      ? null
+                      : widget.controller.connectSetupAuto,
+                  icon: const Icon(Icons.auto_awesome, size: 16),
+                  label: const Text('Auto-login and continue'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'If auto-login fails (captcha/MFA/brand UI change), use manual paste above.',
+              style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
         );

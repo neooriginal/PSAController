@@ -138,6 +138,20 @@ class AppController extends ChangeNotifier {
     }, preserveMessage: false);
   }
 
+  Future<void> connectSetupAuto() async {
+    await _run(() async {
+      final response =
+          await _apiClient.postJson(
+                '/api/setup/connect/auto',
+                {},
+                csrfToken: session?.csrfToken,
+              )
+              as Map<String, dynamic>;
+      setupState = SetupState.fromJson(response);
+      bannerMessage = setupState?.syncMessage;
+    }, preserveMessage: false);
+  }
+
   Future<void> requestOtp() async {
     await _run(() async {
       final response =
