@@ -7,6 +7,8 @@ services:
       HOST: 0.0.0.0
       PORT: 8787
       DB_PATH: /data/data.sqlite3
+      PSA_AUTO_SYNC_INTERVAL_MS: ${PSA_AUTO_SYNC_INTERVAL_MS:-3600000}
+      PSA_AUTO_SYNC_WARMUP_MS: ${PSA_AUTO_SYNC_WARMUP_MS:-60000}
     volumes:
       - psa-controller-data:/data
     healthcheck:

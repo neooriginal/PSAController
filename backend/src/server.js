@@ -29,10 +29,14 @@ function startAutoSyncLoop() {
     try {
       const state = await setupService.getSetupState();
       if (!AUTO_SYNC_ALLOWED_STATES.has(state.status)) {
+        console.log(`Automatic vehicle sync skipped (setup status: ${state.status}).`);
         return;
       }
       const vehicles = await setupService.syncVehicles();
-      console.log(`Automatic vehicle sync completed (${vehicles.length} vehicle(s)).`);
+      const nextState = await setupService.getSetupState();
+      console.log(
+        `Automatic vehicle sync completed (${vehicles.length} vehicle(s), setup status: ${nextState.status}).`,
+      );
     } catch (error) {
       console.error(`Automatic vehicle sync failed: ${error.message}`);
     } finally {

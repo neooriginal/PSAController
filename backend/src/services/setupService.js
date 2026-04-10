@@ -295,7 +295,7 @@ async function syncVehicles() {
   const current = await getSetupState();
   let vehicles = [];
   let message = 'No vehicles were returned.';
-  let lastVehicleSyncAt = null;
+  let lastVehicleSyncAt = current.lastVehicleSyncAt;
 
   if (!['ready_to_sync', 'synced'].includes(current.status)) {
     await updateSetupState({
@@ -345,10 +345,16 @@ async function syncVehicles() {
       return [];
     }
     message = `Sync failed. Backend remains available in degraded mode: ${error.message}`;
+    await updateSetupState({
+      status: current.status,
+      lastVehicleSyncAt,
+      syncMessage: message,
+    });
+    return [];
   }
 
   await updateSetupState({
-    status: vehicles.length > 0 ? 'synced' : 'degraded',
+    status: vehicles.length > 0 ? 'synced' : current.status,
     lastVehicleSyncAt,
     syncMessage: message,
   });
