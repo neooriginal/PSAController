@@ -302,6 +302,158 @@ def fetch_trips(psa_client, vehicle_id):
     return trips
 
 
+def fetch_recorded_trips(car):
+    try:
+        from psa_car_controller.psacc.model.car import Cars
+        from psa_car_controller.psacc.repository.trips import Trips
+
+        trips_by_vin = Trips.get_trips(Cars([car]))
+        trips = trips_by_vin.get(car.vin, [])
+        result = []
+        for trip in trips:
+            result.append(
+                {
+                    "id": str(getattr(trip, "id", "") or ""),
+                    "startedAt": iso(getattr(trip, "start_at", None)),
+                    "endedAt": iso(getattr(trip, "end_at", None)),
+                    "distanceKm": getattr(trip, "distance", 0) or 0,
+                    "averageConsumption": getattr(trip, "consumption_km", None),
+                    "averageSpeed": getattr(trip, "speed_average", None),
+                    "startBatteryLevel": None,
+                    "endBatteryLevel": None,
+                    "altitudeDiff": getattr(trip, "altitude_diff", None),
+                }
+            )
+        return result
+    except Exception as error:
+        print(f"Recorded trip export failed for {car.vin}: {error}", file=sys.stderr)
+        return []
+
+
+def fetch_recorded_chargings(car):
+    try:
+        from psa_car_controller.psacc.application.charging import Charging
+        from psa_car_controller.psacc.repository.db import Database
+
+        conn = Database.get_db()
+        charges = Charging.get_chargings()
+        result = []
+        for charge in charges:
+            vin = charge.get("VIN") or charge.get("vin")
+            if vin != car.vin:
+                continue
+
+            started_at = charge.get("start_at")
+            ended_at = charge.get("stop_at")
+            energy_kwh = charge.get("kw")
+            duration_hours = None
+            if started_at is not None and ended_at is not None:
+                try:
+                    duration_hours = max((ended_at - started_at).total_seconds() / 3600, 0)
+                except Exception:
+                    duration_hours = None
+            average_power_kw = None
+            if duration_hours and duration_hours > 0 and energy_kwh is not None:
+                average_power_kw = energy_kwh / duration_hours
+
+            curve = []
+            if started_at is not None and ended_at is not None:
+                try:
+                    for point in Database.get_battery_curve(conn, started_at, ended_at, car.vin):
+                        curve.append(
+                            {
+                                "id": f"{car.vin}:{iso(point.date)}:{point.level}",
+                                "recordedAt": iso(point.date),
+                                "batteryLevel": point.level,
+                                "powerKw": point.rate,
+                                "autonomyKm": point.autonomy,
+                            }
+                        )
+                except Exception as error:
+                    print(
+                        f"Battery curve export failed for {car.vin} at {started_at}: {error}",
+                        file=sys.stderr,
+                    )
+
+            result.append(
+                {
+                    "id": f"{car.vin}:{iso(started_at)}",
+                    "startedAt": iso(started_at),
+                    "endedAt": iso(ended_at),
+                    "startLevel": charge.get("start_level"),
+                    "endLevel": charge.get("end_level"),
+                    "energyKwh": energy_kwh,
+                    "cost": charge.get("price"),
+                    "averagePowerKw": average_power_kw,
+                    "chargingMode": str(charge.get("charging_mode") or "unknown"),
+                    "curve": curve,
+                }
+            )
+        conn.close()
+        return result
+    except Exception as error:
+        print(f"Recorded charging export failed for {car.vin}: {error}", file=sys.stderr)
+        return []
+
+
+def fetch_recorded_positions(vin):
+    try:
+        from psa_car_controller.psacc.repository.db import Database
+
+        conn = Database.get_db()
+        rows = conn.execute(
+            """
+            SELECT Timestamp, latitude, longitude, altitude, mileage, level, level_fuel
+            FROM position
+            WHERE VIN=?
+            ORDER BY Timestamp DESC
+            LIMIT 200
+            """,
+            (vin,),
+        ).fetchall()
+        conn.close()
+        result = []
+        for row in rows:
+            result.append(
+                {
+                    "id": f"{vin}:{iso(row['Timestamp'])}",
+                    "recordedAt": iso(row["Timestamp"]),
+                    "latitude": row["latitude"],
+                    "longitude": row["longitude"],
+                    "altitude": row["altitude"],
+                    "mileage": row["mileage"],
+                    "batteryLevel": row["level"],
+                    "fuelLevel": row["level_fuel"],
+                }
+            )
+        return result
+    except Exception as error:
+        print(f"Recorded position export failed for {vin}: {error}", file=sys.stderr)
+        return []
+
+
+def merge_trips(recorded_trips, api_trips):
+    merged = {}
+    for trip in api_trips + recorded_trips:
+        trip_key = (
+            f"{trip.get('startedAt') or ''}|"
+            f"{trip.get('endedAt') or ''}|"
+            f"{round(float(trip.get('distanceKm') or 0), 1)}"
+        )
+        if trip_key in merged:
+            existing = merged[trip_key]
+            for key, value in trip.items():
+                if existing.get(key) in (None, "", 0) and value not in (None, "", 0):
+                    existing[key] = value
+        else:
+            merged[trip_key] = dict(trip)
+    return sorted(
+        merged.values(),
+        key=lambda trip: trip.get("startedAt") or "",
+        reverse=True,
+    )
+
+
 def cmd_submit_credentials(payload: dict):
     import requests
 
@@ -491,6 +643,7 @@ def cmd_sync_vehicles(_payload: dict):
 
     with runtime_cwd():
         psa_client = create_psa_client(session)
+        psa_client.set_record(True)
         has_refresh_token = bool(psa_client.manager.refresh_token)
         # Do not hard-fail on refresh here. Right after OAuth handoff, the current
         # access token can already be valid while refresh may transiently fail.
@@ -521,12 +674,19 @@ def cmd_sync_vehicles(_payload: dict):
             status_obj = psa_client.get_vehicle_info(car.vin)
             snapshot = extract_snapshot(status_obj)
             user_vehicle = user_vehicle_map.get(car.vin, {})
+            recorded_trips = fetch_recorded_trips(car)
+            api_trips = fetch_trips(psa_client, car.vehicle_id)
+            chargings = fetch_recorded_chargings(car)
+            recorded_positions = fetch_recorded_positions(car.vin)
 
-            position = []
-            if snapshot.get("latitude") is not None and snapshot.get("longitude") is not None:
+            position = recorded_positions
+            if not position and snapshot.get("latitude") is not None and snapshot.get("longitude") is not None:
                 position = [
                     {
-                        "recordedAt": iso(getattr(getattr(status_obj, "last_position", None), "properties", None) and getattr(getattr(status_obj.last_position, "properties", None), "updated_at", None)),
+                        "recordedAt": iso(
+                            getattr(getattr(status_obj, "last_position", None), "properties", None)
+                            and getattr(getattr(status_obj.last_position, "properties", None), "updated_at", None)
+                        ),
                         "latitude": snapshot["latitude"],
                         "longitude": snapshot["longitude"],
                         "altitude": None,
@@ -545,8 +705,8 @@ def cmd_sync_vehicles(_payload: dict):
                     "type": "electric",
                     "capabilities": ["remote_control", "status", "trips"],
                     "snapshot": snapshot,
-                    "trips": fetch_trips(psa_client, car.vehicle_id),
-                    "chargings": [],
+                    "trips": merge_trips(recorded_trips, api_trips),
+                    "chargings": chargings,
                     "positions": position,
                 }
             )
