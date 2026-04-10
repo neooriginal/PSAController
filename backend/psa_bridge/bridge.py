@@ -12,6 +12,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 RUNTIME_HOME = Path(os.environ.get("PSA_BRIDGE_HOME", ROOT_DIR / "psa-runtime"))
 SESSION_FILE = RUNTIME_HOME / "session.json"
 FALLBACK_SESSION_FILE = (ROOT_DIR / "psa-runtime" / "session.json").resolve()
+CONFIG_FILE = RUNTIME_HOME / "config.json"
+FALLBACK_CONFIG_FILE = (ROOT_DIR / "psa-runtime" / "config.json").resolve()
 CERTS_DIR = RUNTIME_HOME / "certs"
 ASSET_CERTS_DIR = Path(__file__).resolve().parent / "certs"
 
@@ -82,6 +84,42 @@ def save_session(data: dict):
         FALLBACK_SESSION_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def load_saved_config() -> dict:
+    candidates = [CONFIG_FILE]
+    if FALLBACK_CONFIG_FILE not in candidates:
+        candidates.append(FALLBACK_CONFIG_FILE)
+
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            return json.loads(candidate.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as error:
+            raise BridgeError(f"Corrupt config.json: {error}") from error
+    return {}
+
+
+def merge_session_with_config(session: dict) -> dict:
+    config = load_saved_config()
+    if not config:
+        return session
+
+    merged = dict(session)
+    field_map = {
+        "refresh_token": "refreshToken",
+        "remote_refresh_token": "remoteRefreshToken",
+        "client_id": "clientId",
+        "client_secret": "clientSecret",
+        "customer_id": "customerId",
+        "realm": "realm",
+        "country_code": "countryCode",
+    }
+    for config_key, session_key in field_map.items():
+        if not merged.get(session_key) and config.get(config_key):
+            merged[session_key] = config[config_key]
+    return merged
+
+
 def require_session_keys(session: dict, keys):
     missing = [key for key in keys if not session.get(key)]
     if missing:
@@ -124,6 +162,8 @@ def iso(value):
 def create_psa_client(session: dict):
     from psa_car_controller.psacc.application.psa_client import PSAClient
 
+    session = merge_session_with_config(session)
+
     require_session_keys(
         session,
         ["clientId", "clientSecret", "customerId", "realm", "countryCode"],
@@ -147,8 +187,27 @@ def create_psa_client(session: dict):
     if session.get("accessToken"):
         # oauth2-client stores the token on a private field.
         client.manager._access_token = session["accessToken"]
+    client.config_file = str(CONFIG_FILE)
+    client.manager.refresh_callbacks.append(
+        lambda: client.save_config(name=str(CONFIG_FILE), force=True)
+    )
 
     return client
+
+
+def persist_client_state(session: dict, psa_client):
+    session["refreshToken"] = psa_client.manager.refresh_token
+    session["accessToken"] = psa_client.manager.access_token
+    session["remoteRefreshToken"] = psa_client.remote_client.remoteCredentials.refresh_token
+    session["remoteAccessToken"] = psa_client.remote_client.remoteCredentials.access_token
+    session["codeVerifier"] = psa_client.manager.code_verifier
+    session["redirectUri"] = psa_client.manager.redirect_uri
+
+    with runtime_cwd():
+        psa_client.save_config(name=str(CONFIG_FILE), force=True)
+
+    save_session(session)
+    return session
 
 
 def extract_snapshot(status_obj):
@@ -367,13 +426,7 @@ def cmd_connect(payload: dict):
         psa_client.connect(code)
         cars = psa_client.get_vehicles()
 
-    session["refreshToken"] = psa_client.manager.refresh_token
-    session["accessToken"] = psa_client.manager.access_token
-    session["remoteRefreshToken"] = psa_client.remote_client.remoteCredentials.refresh_token
-    session["remoteAccessToken"] = psa_client.remote_client.remoteCredentials.access_token
-    session["codeVerifier"] = psa_client.manager.code_verifier
-    session["redirectUri"] = psa_client.manager.redirect_uri
-    save_session(session)
+    persist_client_state(session, psa_client)
 
     return {
         "status": "connected",
@@ -393,6 +446,7 @@ def cmd_request_otp(_payload: dict):
         if not psa_client.manager.refresh_token_now():
             raise BridgeError("Failed to refresh token before requesting OTP.")
         response = psa_client.remote_client.get_sms_otp_code()
+    persist_client_state(session, psa_client)
     if getattr(response, "status_code", 500) >= 400:
         raise BridgeError(f"SMS OTP request failed: HTTP {response.status_code}")
     return {
@@ -418,9 +472,7 @@ def cmd_confirm_otp(payload: dict):
         psa_client.remote_client.otp = otp_session
         save_otp(otp_session, filename=str(RUNTIME_HOME / "otp.bin"))
 
-    session["remoteRefreshToken"] = psa_client.remote_client.remoteCredentials.refresh_token
-    session["remoteAccessToken"] = psa_client.remote_client.remoteCredentials.access_token
-    save_session(session)
+    persist_client_state(session, psa_client)
 
     return {
         "status": "ready_to_sync",
@@ -498,10 +550,7 @@ def cmd_sync_vehicles(_payload: dict):
                 }
             )
 
-    session["refreshToken"] = psa_client.manager.refresh_token
-    session["accessToken"] = psa_client.manager.access_token
-    session["remoteRefreshToken"] = psa_client.remote_client.remoteCredentials.refresh_token
-    save_session(session)
+    persist_client_state(session, psa_client)
     return vehicles
 
 
@@ -552,8 +601,7 @@ def cmd_run_action(payload: dict):
         except Exception:
             pass
 
-    session["remoteRefreshToken"] = psa_client.remote_client.remoteCredentials.refresh_token
-    save_session(session)
+    persist_client_state(session, psa_client)
 
     return {
         "vin": vin,

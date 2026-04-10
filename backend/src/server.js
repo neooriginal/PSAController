@@ -11,7 +11,7 @@ const settingsRoutes = require('./routes/settingsRoutes');
 const { createMcpRouter } = require('./mcp/server');
 const setupService = require('./services/setupService');
 
-const AUTO_SYNC_ALLOWED_STATES = new Set(['connected', 'otp_requested', 'ready_to_sync', 'synced']);
+const AUTO_SYNC_ALLOWED_STATES = new Set(['ready_to_sync', 'synced']);
 
 function startAutoSyncLoop() {
   const intervalMs = config.autoSyncIntervalMs;

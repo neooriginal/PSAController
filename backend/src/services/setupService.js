@@ -23,10 +23,9 @@ function isReauthError(error) {
 async function markReauthRequired(reason) {
   return updateSetupState({
     status: 'reauth_required',
-    redirectUrl: null,
     syncMessage:
       reason ||
-      'PSA session expired. Please redo onboarding to refresh authorization.',
+      'PSA session expired. Reconnect with a fresh authorization link in step 2.',
   });
 }
 
@@ -34,7 +33,9 @@ async function clearRuntimeSessionFiles() {
   const runtimeHome = config.psaBridgeHome;
   const files = [
     path.join(runtimeHome, 'session.json'),
+    path.join(runtimeHome, 'config.json'),
     path.join(runtimeHome, 'otp.bin'),
+    path.join(runtimeHome, 'cars.json'),
   ];
   for (const file of files) {
     try {
@@ -124,14 +125,14 @@ async function recoverAuthorization(reason) {
   try {
     const response = await provider.submitCredentials(credentials);
     return updateSetupState({
-      status: response.status,
+      status: 'reauth_required',
       brand: credentials.brand,
       email: credentials.email,
       countryCode: credentials.countryCode,
       redirectUrl: response.redirectUrl,
       syncMessage:
         reason ||
-        'PSA session expired. Please complete authentication again using the refreshed link.',
+        'PSA session expired. A fresh authentication link is ready. Open step 2 and complete reconnect.',
     });
   } catch (_error) {
     return markReauthRequired(reason);
@@ -236,6 +237,14 @@ async function requestOtp() {
   const current = await getSetupState();
   let nextState;
 
+  if (!['connected', 'otp_requested', 'ready_to_sync', 'synced'].includes(current.status)) {
+    return updateSetupState({
+      status: current.status,
+      syncMessage:
+        'Complete PSA authentication first. Finish step 2 and submit a fresh authorization code before requesting SMS verification.',
+    });
+  }
+
   try {
     const result = await provider.requestOtp();
     nextState = await updateSetupState({
@@ -257,6 +266,14 @@ async function confirmOtp(payload) {
   const current = await getSetupState();
   let nextState;
 
+  if (!['otp_requested', 'ready_to_sync', 'synced'].includes(current.status)) {
+    return updateSetupState({
+      status: current.status,
+      syncMessage:
+        'Request the SMS verification code first, then confirm it with your vehicle PIN.',
+    });
+  }
+
   try {
     const result = await provider.confirmOtp(payload);
     nextState = await updateSetupState({
@@ -275,9 +292,19 @@ async function confirmOtp(payload) {
 
 async function syncVehicles() {
   const provider = getPsaProvider();
+  const current = await getSetupState();
   let vehicles = [];
   let message = 'No vehicles were returned.';
   let lastVehicleSyncAt = null;
+
+  if (!['ready_to_sync', 'synced'].includes(current.status)) {
+    await updateSetupState({
+      status: current.status,
+      syncMessage:
+        'Authentication handoff incomplete. Please complete step 2 and submit a fresh authorization code before syncing cars.',
+    });
+    return [];
+  }
 
   try {
     vehicles = await provider.syncVehicles();
@@ -313,7 +340,7 @@ async function syncVehicles() {
   } catch (error) {
     if (isReauthError(error)) {
       await recoverAuthorization(
-        'PSA session expired during vehicle sync. Please redo onboarding.',
+        'PSA session expired during vehicle sync. A fresh authorization link is ready in step 2.',
       );
       return [];
     }

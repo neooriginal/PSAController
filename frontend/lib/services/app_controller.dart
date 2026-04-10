@@ -321,7 +321,7 @@ class AppController extends ChangeNotifier {
   Future<void> _loadAdminData() async {
     final keysJson =
         await _apiClient.getJson('/api/settings/mcp-keys') as List<dynamic>;
-    final auditJson = [] as List<dynamic>;
+    final auditJson = <dynamic>[];
     mcpKeys = keysJson
         .map((item) => McpKeyRecord.fromJson(item as Map<String, dynamic>))
         .toList();

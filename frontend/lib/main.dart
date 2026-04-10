@@ -294,9 +294,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget build(BuildContext context) {
     final vehicle = widget.controller.selectedVehicle;
     final setupStatus = widget.controller.setupState?.status ?? 'not_started';
-    final needsSetup =
-        setupStatus == 'reauth_required' ||
-        (widget.controller.vehicles.isEmpty && setupStatus != 'synced');
+    final needsSetup = setupStatus != 'synced';
 
     return Column(
       children: [
@@ -379,6 +377,9 @@ class _SetupScreenState extends State<SetupScreen>
 
   int get stepIndex {
     final status = widget.controller.setupState?.status ?? 'not_started';
+    final hasRedirectUrl =
+        (widget.controller.setupState?.redirectUrl ?? '').isNotEmpty;
+    if (status == 'reauth_required' && hasRedirectUrl) return 1;
     if (status == 'credentials_saved') return 1;
     if (status == 'connected') return 2;
     if (status == 'otp_requested') return 3;
@@ -457,7 +458,7 @@ class _SetupScreenState extends State<SetupScreen>
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Link copied to clipboard.')),
       );
-    } catch (_error) {
+    } catch (error) {
       authCodeController.text = url;
       if (!mounted) {
         return;
@@ -539,6 +540,14 @@ class _SetupScreenState extends State<SetupScreen>
               widget.controller.setupState?.syncMessage ??
                   'Open the PSA login page in a second tab, finish the flow, then paste the final redirect URL or just the code value.',
             ),
+            if ((widget.controller.setupState?.status ?? '') ==
+                'reauth_required') ...[
+              const SizedBox(height: 10),
+              Text(
+                'The previous PSA session expired. Complete this step again to restore live sync without resetting the rest of the app.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
             if (redirectUrl != null && redirectUrl.isNotEmpty) ...[
               const SizedBox(height: 16),
               Container(
@@ -622,13 +631,13 @@ class _SetupScreenState extends State<SetupScreen>
                       ? null
                       : widget.controller.connectSetupAuto,
                   icon: const Icon(Icons.auto_awesome, size: 16),
-                  label: const Text('Auto-login and continue'),
+                  label: const Text('Try browser automation'),
                 ),
               ],
             ),
             const SizedBox(height: 10),
             Text(
-              'If auto-login fails (captcha/MFA/brand UI change), use manual paste above.',
+              'Browser automation is experimental and often breaks on CAPTCHA, MFA, or PSA page changes. The manual paste flow above is the reliable path.',
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
@@ -1423,8 +1432,46 @@ class _TopBar extends StatelessWidget {
 
   final AppController controller;
 
+  static bool _canSyncCars(String status) =>
+      status == 'ready_to_sync' || status == 'synced';
+
+  static String _statusLabel(String status, bool hasVehicles) {
+    switch (status) {
+      case 'synced':
+        return 'ready';
+      case 'ready_to_sync':
+        return 'sync pending';
+      case 'otp_requested':
+        return 'otp pending';
+      case 'connected':
+        return 'pin setup';
+      case 'credentials_saved':
+        return 'auth required';
+      case 'reauth_required':
+        return 'reconnect';
+      case 'degraded':
+        return hasVehicles ? 'stale data' : 'attention';
+      default:
+        return 'setup';
+    }
+  }
+
+  static Color _statusColor(String status) {
+    switch (status) {
+      case 'synced':
+        return const Color(0xFFD8E9DE);
+      case 'reauth_required':
+      case 'degraded':
+        return const Color(0xFFFFE7D8);
+      default:
+        return const Color(0xFFE2D5C0);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final setupStatus = controller.setupState?.status ?? 'not_started';
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
       decoration: BoxDecoration(
@@ -1466,10 +1513,10 @@ class _TopBar extends StatelessWidget {
                 ),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(999),
-                  color: const Color(0xFFE2D5C0),
+                  color: _statusColor(setupStatus),
                 ),
                 child: Text(
-                  controller.vehicles.isEmpty ? 'setup' : 'ready',
+                  _statusLabel(setupStatus, controller.vehicles.isNotEmpty),
                   style: Theme.of(context).textTheme.labelMedium?.copyWith(
                     fontWeight: FontWeight.w700,
                   ),
@@ -1509,7 +1556,9 @@ class _TopBar extends StatelessWidget {
                 child: const Text('Refresh'),
               ),
               FilledButton.tonal(
-                onPressed: controller.loading ? null : controller.syncVehicles,
+                onPressed: controller.loading || !_canSyncCars(setupStatus)
+                    ? null
+                    : controller.syncVehicles,
                 child: const Text('Sync cars'),
               ),
               TextButton(
@@ -1534,30 +1583,6 @@ class _TopBar extends StatelessWidget {
             ],
           );
         },
-      ),
-    );
-  }
-}
-
-class _AuthEyebrow extends StatelessWidget {
-  const _AuthEyebrow({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(999),
-        color: const Color(0xFFE5DAC9),
-      ),
-      child: Text(
-        label.toUpperCase(),
-        style: Theme.of(context).textTheme.labelLarge?.copyWith(
-          letterSpacing: 1.4,
-          color: const Color(0xFF5E5A54),
-        ),
       ),
     );
   }
