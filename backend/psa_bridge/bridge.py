@@ -274,7 +274,7 @@ def fetch_trips(psa_client, vehicle_id):
         from psa_car_controller.psa.connected_car_api.api.trips_api import TripsApi
 
         api = TripsApi(psa_client.api().api_client)
-        response = api.get_trips_by_vehicle_1(vehicle_id)
+        response = api.get_trips_by_vehicle_1(vehicle_id, page_size=100)
         embedded = getattr(response, "embedded", None)
         raw_trips = getattr(embedded, "trips", None) or []
         for trip in raw_trips:
@@ -295,8 +295,9 @@ def fetch_trips(psa_client, vehicle_id):
                     "altitudeDiff": None,
                 }
             )
-    except Exception:
+    except Exception as error:
         # PSA trip endpoint availability differs by vehicle/market and should not block sync.
+        print(f"Trip fetch failed for {vehicle_id}: {error}", file=sys.stderr)
         return []
     return trips
 

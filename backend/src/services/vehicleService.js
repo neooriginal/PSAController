@@ -1,6 +1,5 @@
 const db = require('../db/sqlite');
 const { randomId } = require('./securityService');
-const { listSettings } = require('./settingsService');
 
 function parseRowJson(value, fallback = {}) {
   try {
@@ -8,6 +7,105 @@ function parseRowJson(value, fallback = {}) {
   } catch (_error) {
     return fallback;
   }
+}
+
+function parseTimestamp(value) {
+  const timestamp = Date.parse(value || '');
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function buildDerivedTrip(vin, points) {
+  if (!Array.isArray(points) || points.length < 2) {
+    return null;
+  }
+
+  const start = points[0];
+  const end = points[points.length - 1];
+  const startedAtMs = parseTimestamp(start.recorded_at);
+  const endedAtMs = parseTimestamp(end.recorded_at);
+  if (startedAtMs == null || endedAtMs == null || endedAtMs <= startedAtMs) {
+    return null;
+  }
+
+  const startMileage = Number(start.mileage);
+  const endMileage = Number(end.mileage);
+  if (!Number.isFinite(startMileage) || !Number.isFinite(endMileage)) {
+    return null;
+  }
+
+  const distanceKm = endMileage - startMileage;
+  if (!Number.isFinite(distanceKm) || distanceKm < 1) {
+    return null;
+  }
+
+  const durationHours = (endedAtMs - startedAtMs) / 3600000;
+  if (!Number.isFinite(durationHours) || durationHours <= 0) {
+    return null;
+  }
+
+  const altitudeDiff = start.altitude == null || end.altitude == null
+    ? null
+    : Number(end.altitude) - Number(start.altitude);
+
+  return {
+    id: `derived:${vin}:${start.recorded_at}:${end.recorded_at}`,
+    startedAt: start.recorded_at,
+    endedAt: end.recorded_at,
+    distanceKm,
+    averageConsumption: null,
+    averageSpeed: distanceKm / durationHours,
+    startBatteryLevel: start.battery_level ?? null,
+    endBatteryLevel: end.battery_level ?? null,
+    altitudeDiff,
+  };
+}
+
+async function deriveTripsFromPositions(vin) {
+  const rows = await db.all(
+    `SELECT recorded_at, mileage, altitude, battery_level
+     FROM positions
+     WHERE vin = ? AND recorded_at IS NOT NULL AND mileage IS NOT NULL
+     ORDER BY recorded_at ASC`,
+    [vin],
+  );
+
+  if (rows.length < 2) {
+    return [];
+  }
+
+  const trips = [];
+  let segment = [rows[0]];
+
+  const flushSegment = () => {
+    const trip = buildDerivedTrip(vin, segment);
+    if (trip) {
+      trips.push(trip);
+    }
+  };
+
+  for (let index = 1; index < rows.length; index += 1) {
+    const current = rows[index];
+    const previous = segment[segment.length - 1];
+    const previousTs = parseTimestamp(previous.recorded_at);
+    const currentTs = parseTimestamp(current.recorded_at);
+    const gapHours =
+      previousTs == null || currentTs == null
+        ? Number.POSITIVE_INFINITY
+        : (currentTs - previousTs) / 3600000;
+    const mileageDelta =
+      Number(current.mileage ?? 0) - Number(previous.mileage ?? 0);
+
+    if (gapHours > 2.5 || mileageDelta < -1) {
+      flushSegment();
+      segment = [current];
+      continue;
+    }
+
+    segment.push(current);
+  }
+
+  flushSegment();
+  return trips.sort((left, right) => right.startedAt.localeCompare(left.startedAt));
 }
 
 async function upsertVehicles(vehicles) {
@@ -116,6 +214,14 @@ async function listTrips(vin) {
   }));
 }
 
+async function listTripsWithFallback(vin) {
+  const storedTrips = await listTrips(vin);
+  if (storedTrips.length > 0) {
+    return storedTrips;
+  }
+  return deriveTripsFromPositions(vin);
+}
+
 async function listChargingSessions(vin) {
   const rows = await db.all('SELECT * FROM charging_sessions WHERE vin = ? ORDER BY started_at DESC', [vin]);
   return rows.map((row) => ({
@@ -163,14 +269,8 @@ async function listBatteryCurve(vin, chargingSessionId) {
 }
 
 async function getStats(vin) {
-  const [tripAgg, chargingAgg, lastCharging, settings] = await Promise.all([
-    db.get(
-      `SELECT COUNT(*) as trip_count, COALESCE(SUM(distance_km), 0) as total_distance,
-              COALESCE(AVG(distance_km), 0) as average_trip_length,
-              COALESCE(AVG(average_consumption), 0) as average_consumption
-       FROM trips WHERE vin = ?`,
-      [vin],
-    ),
+  const [trips, chargingAgg, lastCharging] = await Promise.all([
+    listTripsWithFallback(vin),
     db.get(
       `SELECT COALESCE(SUM(energy_kwh), 0) as total_energy_charged
        FROM charging_sessions WHERE vin = ?`,
@@ -182,19 +282,27 @@ async function getStats(vin) {
        ORDER BY started_at DESC LIMIT 1`,
       [vin],
     ),
-    listSettings(),
   ]);
+
+  const tripCount = trips.length;
+  const totalDistance = trips.reduce((sum, trip) => sum + Number(trip.distanceKm || 0), 0);
+  const averageTripLength = tripCount > 0 ? totalDistance / tripCount : 0;
+  const tripsWithConsumption = trips.filter((trip) => trip.averageConsumption != null);
+  const averageConsumption = tripsWithConsumption.length > 0
+    ? tripsWithConsumption.reduce((sum, trip) => sum + Number(trip.averageConsumption || 0), 0) /
+      tripsWithConsumption.length
+    : 0;
 
   const lastChargeEfficiency = lastCharging && lastCharging.end_level && lastCharging.start_level
     ? (lastCharging.end_level - lastCharging.start_level) / Math.max(lastCharging.energy_kwh || 1, 1)
     : null;
 
   return {
-    totalDistanceKm: Number(tripAgg?.total_distance || 0),
-    averageConsumption: Number(tripAgg?.average_consumption || 0),
+    totalDistanceKm: totalDistance,
+    averageConsumption,
     totalEnergyChargedKwh: Number(chargingAgg?.total_energy_charged || 0),
-    averageTripLengthKm: Number(tripAgg?.average_trip_length || 0),
-    tripCount: Number(tripAgg?.trip_count || 0),
+    averageTripLengthKm: averageTripLength,
+    tripCount,
     lastChargeEfficiency,
   };
 }
@@ -206,7 +314,7 @@ async function getVehicle(vin) {
   }
 
   const [trips, chargings, positions, stats] = await Promise.all([
-    listTrips(vin),
+    listTripsWithFallback(vin),
     listChargingSessions(vin),
     listPositions(vin),
     getStats(vin),
@@ -325,15 +433,16 @@ async function saveImportedVehicleData(vin, data) {
 
   if (Array.isArray(data.positions)) {
     for (const position of data.positions) {
+      const recordedAt = position.recordedAt || now;
       await db.run(
         `INSERT OR REPLACE INTO positions (
           id, vin, recorded_at, latitude, longitude, altitude, mileage,
           battery_level, fuel_level, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          position.id || randomId(),
+          position.id || `${vin}:${recordedAt}`,
           vin,
-          position.recordedAt,
+          recordedAt,
           position.latitude ?? null,
           position.longitude ?? null,
           position.altitude ?? null,
@@ -352,6 +461,7 @@ module.exports = {
   listVehicles,
   getVehicle,
   listTrips,
+  listTripsWithFallback,
   listChargingSessions,
   listPositions,
   listBatteryCurve,

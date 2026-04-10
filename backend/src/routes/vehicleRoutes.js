@@ -30,7 +30,7 @@ router.get('/vehicles/:vin', async (req, res, next) => {
 
 router.get('/vehicles/:vin/trips', async (req, res, next) => {
   try {
-    res.json(await vehicleService.listTrips(req.params.vin));
+    res.json(await vehicleService.listTripsWithFallback(req.params.vin));
   } catch (error) {
     next(error);
   }
