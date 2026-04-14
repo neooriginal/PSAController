@@ -242,7 +242,7 @@ async function listPositions(vin) {
     'SELECT * FROM positions WHERE vin = ? ORDER BY recorded_at DESC LIMIT 100',
     [vin],
   );
-  return rows.map((row) => ({
+  const mappedRows = rows.map((row) => ({
     id: row.id,
     recordedAt: row.recorded_at,
     latitude: row.latitude,
@@ -252,6 +252,33 @@ async function listPositions(vin) {
     batteryLevel: row.battery_level,
     fuelLevel: row.fuel_level,
   }));
+
+  if (mappedRows.length > 0) {
+    return mappedRows;
+  }
+
+  const snapshot = await db.get(
+    `SELECT latitude, longitude, mileage, battery_level, updated_at
+     FROM vehicle_snapshots WHERE vin = ?`,
+    [vin],
+  );
+
+  if (!snapshot || snapshot.latitude == null || snapshot.longitude == null) {
+    return mappedRows;
+  }
+
+  return [
+    {
+      id: `snapshot:${vin}:${snapshot.updated_at || 'latest'}`,
+      recordedAt: snapshot.updated_at || new Date().toISOString(),
+      latitude: snapshot.latitude,
+      longitude: snapshot.longitude,
+      altitude: null,
+      mileage: snapshot.mileage ?? null,
+      batteryLevel: snapshot.battery_level ?? null,
+      fuelLevel: null,
+    },
+  ];
 }
 
 async function listBatteryCurve(vin, chargingSessionId) {
